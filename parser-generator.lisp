@@ -456,7 +456,7 @@
                                             (cdr expr)))
                
                ((equal head-name "GROUP")
-                (block-expressions          seq current-result current-index
+                (group-expressions          seq current-result current-index
                                             (cdr expr)))
                
                (t
@@ -516,10 +516,12 @@
                                                       (apply ,result-interpretor
                                                              (nreverse ,updated-result))
                                                       ,updated-result)))
-                             (setf (gethash ,current-index ,memo)
-                                   (make-array 3 :initial-contents
-                                               (list ,updated-result ,next-index ,success)))
-                             (values ,updated-result ,next-index ,success)))))))))
+                             (let ((,lookup-result (gethash ,current-index ,memo)))
+                               (declare (type (simple-vector 3) ,lookup-result))
+                               (setf (elt ,lookup-result 0) ,updated-result
+                                     (elt ,lookup-result 1) ,next-index
+                                     (elt ,lookup-result 2) ,success)
+                               (values ,updated-result ,next-index ,success))))))))))
 
 (defun set-find (key s)
   (let ((m (member key s)))
