@@ -142,7 +142,7 @@
                                                     expr))
                             exprs)
                     :from-end t
-                    :initial-value `(return (values (cons ,updated-result ,current-result)
+                    :initial-value `(return (values (cons (nerverse ,updated-result) ,current-result)
                                                     ,next-index
                                                     t)))))))
 
