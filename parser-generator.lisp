@@ -166,8 +166,8 @@
 
 
 ;; Zero-or-more:
-;; PEG: expr* => (repeat expr)
-(defun repeat-of-an-expression (seq current-result current-index expr)
+;; PEG: expr* => (repeat expr...) (Note: implicit sequence)
+(defun repeat-of-an-expression (seq current-result current-index exprs)
   (let ((index          (gensym))
 	(next-index     (gensym))
         (result         (gensym))
@@ -178,7 +178,7 @@
          (nil)
        (declare (type fixnum ,index))
        (multiple-value-bind (,updated-result ,next-index ,success)
-           ,(translate-expression seq result index expr)
+           ,(translate-expression seq result index exprs)
          (declare (type fixnum ,next-index))
          (if ,success
              (progn
@@ -265,7 +265,7 @@
 ;; 2: 'symbol == '(eq 'symbol x)
 (defun predicate-eq (seq current-result current-index symbol)
   `(if (and (< ,current-index (length ,seq))
-	    (eq (quote ,symbol) (elt ,seq ,current-index)))
+              (eq ,symbol (elt ,seq ,current-index)))
        (values (cons (elt ,seq ,current-index)
 		     ,current-result)
 	       (locally (declare (optimize (safety 0)))
@@ -287,10 +287,26 @@
 	       ,current-index
 	       nil)))
 
+;; 4: 'literal == '(equal literal x)
+(defun predicate-equal (seq current-result current-index literal)
+  `(if (and (< ,current-index (length ,seq))
+	    (equal ,literal (elt ,seq ,current-index)))
+       (values (cons (elt ,seq ,current-index)
+		     ,current-result)
+	       (1+ ,current-index)
+	       t)
+       (values (cons ,current-index '(equal ,literal))
+	       ,current-index
+	       nil)))
+
 (defun predicate-expression (seq current-result current-index expr)
-  (if (symbolp expr)
-      (predicate-eq   seq current-result current-index expr)
-      (predicate-call seq current-result current-index expr)))
+  (cond
+    ((symbolp expr)
+     (predicate-eq    seq current-result current-index expr))
+    ((consp expr)
+     (predicate-call  seq current-result current-index expr))
+    (t
+     (predicate-equal seq current-result current-index expr))))
 
 
 ;; "*": always success with consuming a single input element
@@ -438,9 +454,9 @@
                 (optional-expression        seq current-result current-index
                                             (cadr expr)))
                
-               ((equal head-name "REPEAT")
+               ((equal head-name "REPEAT") ;; Note: implicit sequence
                 (repeat-of-an-expression    seq current-result current-index
-                                            (cadr expr)))
+                                            (cdr expr)))
                
                ((equal head-name "&")
                 (and-predicate              seq current-result current-index
@@ -586,13 +602,15 @@
         (memoise-tables (make-hash-table)))
     (let ((inlinable-symbols (collect-inlinable start-symbols
                                                 non-terminal-symbols
-                                                rule-bodies)))
+                                                rule-bodies)
+            ))
       (mapc (lambda (non-terminal)
               (setf (gethash non-terminal memoise-tables)
                     (gensym)))
             non-terminal-symbols)
       `(let ((,default-interpretor (lambda (&rest xs) (declare (ignore xs)) t)))
          (declare  (ignorable ,default-interpretor)
+                   #+sbcl(sb-ext:muffle-conditions sb-ext:compiler-note)
                    (optimize (speed 3)))
          (labels ((,process (,input-sequence ,start-index)
                     (declare (type simple-vector ,input-sequence)
@@ -613,7 +631,7 @@
                                        non-terminal-symbols
                                        rule-bodies
                                        result-interpretors)
-                        ,@(if inlinable-symbols `((declare (inline ,@inlinable-symbols))))
+                        (declare ,@(if inlinable-symbols `((inline ,@inlinable-symbols))))
                         (let ((,input-length (length ,input-sequence)))
                           (or
                            ,@(mapcar (lambda (start-symbol)
