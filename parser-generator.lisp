@@ -96,11 +96,15 @@
 
 (defpackage :dtakahashi.peg
   (:use :common-lisp)
-  (:export :defparser)
+  (:export :defparser :*optimization-flag*)
   (:nicknames :peg))
 
 
 (in-package :dtakahashi.peg)
+
+(defstruct peg-failure-descriptor
+  (pos 0 :type fixnum)
+  fail)
 
 ;; Sequence: sequence of one or more exprs
 ;; PEG: expr1 expr2 ... => (expr1 exprs2 ...)
@@ -258,21 +262,22 @@
 	       (locally (declare (optimize (safety 0)))
 		 (the fixnum (1+ ,current-index)))
 	       t)
-       (values (make-array 2 :initial-contents
-                           (list ,current-index ',predicate-call))
+       (values (peg::make-peg-failure-descriptor
+                :pos ,current-index :fail ',predicate-call)
                ,current-index
                nil)))
 
 ;; 2: 'symbol == '(eq 'symbol x)
 (defun predicate-eq (seq current-result current-index symbol)
   `(if (and (< ,current-index (length ,seq))
-              (eq ,symbol (elt ,seq ,current-index)))
+              (eq (quote ,symbol) (elt ,seq ,current-index)))
        (values (cons (elt ,seq ,current-index)
 		     ,current-result)
 	       (locally (declare (optimize (safety 0)))
 		 (the fixnum (1+ ,current-index)))
 	       t)
-       (values (cons ,current-index '(eq ,symbol))
+       (values (peg::make-peg-failure-descriptor
+                :pos ,current-index :fail '(eq ,symbol))
 	       ,current-index
 	       nil)))
 
@@ -284,7 +289,8 @@
 		     ,current-result)
 	       (1+ ,current-index)
 	       t)
-       (values (cons ,current-index '(eql ,literal))
+       (values (peg::make-peg-failure-descriptor
+                :pos ,current-index :fail '(eql ,literal))
 	       ,current-index
 	       nil)))
 
@@ -296,7 +302,8 @@
 		     ,current-result)
 	       (1+ ,current-index)
 	       t)
-       (values (cons ,current-index '(equal ,literal))
+       (values (peg::make-peg-failure-descriptor
+                :pos ,current-index :fail '(equal ,literal))
 	       ,current-index
 	       nil)))
 
@@ -317,7 +324,8 @@
                (locally (declare (optimize (safety 0)))
 		 (the fixnum (1+ ,current-index)))
                t)
-       (values (cons ,current-index 'unexpected-end-of-input)
+       (values (peg::make-peg-failure-descriptor
+                :pos ,current-index :fail 'unexpected-end-of-input)
 	       ,current-index
 	       nil)))
 
@@ -334,7 +342,8 @@
        (values ,current-result
                ,current-index
                t)
-       (values (cons ,current-index 'unterminated)
+       (values (peg::make-peg-failure-descriptor
+                :pos ,current-index :fail 'unterminated)
 	       ,current-index
 	       nil)))
 
@@ -393,10 +402,14 @@
                         ,i
                         t))
              (if (not (eql (elt ,seq ,i) (elt ,target ,j)))
-                 (return (values (cons ,current-index '(start-with ,sub-vector))
+                 (return (values (peg::make-peg-failure-descriptor
+                                  :pos    ,current-index
+                                  :fail '(start-with ,sub-vector))
                                  ,current-index
                                  nil))))
-           (values (cons ,current-index '(start-with ,sub-vector))
+           (values (peg::make-peg-failure-descriptor
+                    :pos    ,current-index
+                    :fail '(start-with ,sub-vector))
                    ,current-index ,nil)))))
 
 
@@ -494,6 +507,10 @@
      (predicate-eql       seq current-result current-index
                           expr))))
 
+(defstruct memoise-value
+  (result nil :type t)
+  (index 0    :type fixnum)
+  (state nil  :type boolean))
 
 (defun translate-single-rule (nt-symbol rule-body memo result-interpretor)
   (let ((seq            (gensym))
@@ -511,18 +528,19 @@
                      (gethash ,current-index ,memo)
                    (if ,lookup-success
                        (locally
-                           (declare (type (simple-vector 3) ,lookup-result))
-                         (values (elt ,lookup-result 0)
-                                 (elt ,lookup-result 1)
-                                 (elt ,lookup-result 2)))
+                           (declare (type memoise-value ,lookup-result))
+                         (values (memoise-value-result ,lookup-result)
+                                 (memoise-value-index  ,lookup-result)
+                                 (memoise-value-state  ,lookup-result)))
                        (progn
                          ;; add a sentinel to reject reentrant evaluations
                          ;; (maybe left recursions?)
                          (setf (gethash ,current-index ,memo)
-                               (make-array 3 :initial-contents
-                                           (list (cons ,current-index 'left-recursion)
-                                                 ,current-index
-                                                 nil)))
+                               (peg::make-memoise-value
+                                :result (peg::make-peg-failure-descriptor
+                                         :pos ,current-index :fail 'left-recursion)
+                                :index  ,current-index
+                                :state  nil))
                          (multiple-value-bind (,updated-result ,next-index ,success)
                              ,(translate-expression seq
                                                     current-result
@@ -533,11 +551,11 @@
                                                       (apply ,result-interpretor
                                                              (nreverse ,updated-result))
                                                       ,updated-result)))
-                             (let ((,lookup-result (gethash ,current-index ,memo)))
-                               (declare (type (simple-vector 3) ,lookup-result))
-                               (setf (elt ,lookup-result 0) ,updated-result
-                                     (elt ,lookup-result 1) ,next-index
-                                     (elt ,lookup-result 2) ,success)
+                             (let ((,lookup-result (nth-value 0 (gethash ,current-index ,memo))))
+                               (declare (type memoise-value ,lookup-result))
+                               (setf (memoise-value-result ,lookup-result) ,updated-result
+                                     (memoise-value-index ,lookup-result) ,next-index
+                                     (memoise-value-state ,lookup-result) ,success)
                                (values ,updated-result ,next-index ,success))))))))))
 
 (defun set-find (key s)
@@ -588,6 +606,13 @@
          collect symbol))))
 
 
+(defparameter *optimization-flag* '((speed 3)))
+
+(defun default-interpretor (&rest xs)
+  (if (and xs (car xs) (not (peg-parser-error-descriptor-p (car xs))))
+      t
+      nil))
+
 (defmacro defparser (name start-symbols &body rules)
   (let ((input-sequence (gensym))
         (input-length   (gensym))
@@ -599,66 +624,61 @@
         (non-terminal-symbols (mapcar #'car   rules))
         (rule-bodies          (mapcar #'cadr  rules))
         (result-interpretors  (mapcar #'caddr rules))
-	(default-interpretor  (gensym))
         (memoise-tables (make-hash-table)))
     (let ((inlinable-symbols (collect-inlinable start-symbols
                                                 non-terminal-symbols
-                                                rule-bodies)
-            ))
+                                                rule-bodies)))
       (mapc (lambda (non-terminal)
               (setf (gethash non-terminal memoise-tables)
                     (gensym)))
             non-terminal-symbols)
-      `(let ((,default-interpretor (lambda (&rest xs) (declare (ignore xs)) t)))
-         (declare  (ignorable ,default-interpretor)
-                   #+sbcl(sb-ext:muffle-conditions sb-ext:compiler-note)
-                   (optimize (speed 3)))
-         (labels ((,process (,input-sequence ,start-index)
-                    (declare (type simple-vector ,input-sequence)
-                             (type fixnum ,start-index))
-                    ;; generate memoise tables for each non-terminal symbol
-                    (let ,(mapcar (lambda (memo-var)
-                                    `(,memo-var (make-hash-table)))
-                                  (loop for value being the hash-value of memoise-tables
-                                     collect value))
-                      ;; main recursive parser functions
-                      (labels ,(mapcar (lambda (non-terminal-symbol rule result-interpretor)
-                                         (translate-single-rule non-terminal-symbol
-                                                                rule
-                                                                (gethash non-terminal-symbol
-                                                                         memoise-tables)
-                                                                (or result-interpretor
-                                                                    default-interpretor)))
-                                       non-terminal-symbols
-                                       rule-bodies
-                                       result-interpretors)
-                        (declare ,@(if inlinable-symbols `((inline ,@inlinable-symbols))))
-                        (let ((,input-length (length ,input-sequence)))
-                          (or
-                           ,@(mapcar (lambda (start-symbol)
-                                       `(multiple-value-bind (,result ,index-next ,success)
-                                            (,start-symbol ,input-sequence nil ,start-index)
-                                          (declare (type fixnum ,index-next))
-                                          (if ,success
-                                              (values ,result     ;; parse result
-                                                      ,index-next ;; next sequence index
-                                                      t           ;; (partially-)matched-p
-                                                      (= ,input-length ,index-next)) ;; exhausted-p
-                                              (values ,result ;; maybe an error descripting object
-                                                      ,index-next
-                                                      nil
-                                                      nil))))
-                                     start-symbols)))))))
-           (defun ,name (input-sequence &key (start-index 0))
-             (let ((start-index    (locally
-                                       ;; stop warning about
-                                       ;; potentially failing coercion
-                                       (declare #+sbcl(sb-ext:muffle-conditions
-                                                       sb-ext:compiler-note))
-                                     (coerce start-index 'fixnum)))
-                   (input-sequence (locally
-                                       ;; same as above
-                                       (declare #+sbcl(sb-ext:muffle-conditions
-                                                       sb-ext:compiler-note))
-                                     (coerce input-sequence 'simple-vector))))
-               (,process input-sequence start-index))))))))
+      `(labels ((,process (,input-sequence ,start-index)
+                  (declare (type simple-vector ,input-sequence)
+                           (type fixnum ,start-index)
+                           (optimize ,@dtakahashi.peg:*optimization-flag*))
+                  ;; generate memoise tables for each non-terminal symbol
+                  (let ,(mapcar (lambda (memo-var)
+                                  `(,memo-var (make-hash-table)))
+                                (loop for value being the hash-value of memoise-tables
+                                   collect value))
+                    ;; main recursive parser functions
+                    (labels ,(mapcar (lambda (non-terminal-symbol rule result-interpretor)
+                                       (translate-single-rule non-terminal-symbol
+                                                              rule
+                                                              (gethash non-terminal-symbol
+                                                                       memoise-tables)
+                                                              (or result-interpretor
+                                                                  '#'dtakahashi.peg::default-interpretor)))
+                                     non-terminal-symbols
+                                     rule-bodies
+                                     result-interpretors)
+                      (declare ,@(if inlinable-symbols `((inline ,@inlinable-symbols))))
+                      (let ((,input-length (length ,input-sequence)))
+                        (or
+                         ,@(mapcar (lambda (start-symbol)
+                                     `(multiple-value-bind (,result ,index-next ,success)
+                                          (,start-symbol ,input-sequence nil ,start-index)
+                                        (declare (type fixnum ,index-next))
+                                        (if ,success
+                                            (values ,result     ;; parse result
+                                                    ,index-next ;; next sequence index
+                                                    t           ;; (partially-)matched-p
+                                                    (= ,input-length ,index-next)) ;; exhausted-p
+                                            (values ,result ;; maybe an error descripting object
+                                                    ,index-next
+                                                    nil
+                                                    nil))))
+                                   start-symbols)))))))
+         (defun ,name (input-sequence &key (start-index 0))
+           (let ((start-index    (locally
+                                     ;; stop warning about
+                                     ;; potentially failing coercion
+                                     (declare #+sbcl(sb-ext:muffle-conditions
+                                                     sb-ext:compiler-note))
+                                   (coerce start-index 'fixnum)))
+                 (input-sequence (locally
+                                     ;; same as above
+                                     (declare #+sbcl(sb-ext:muffle-conditions
+                                                     sb-ext:compiler-note))
+                                   (coerce input-sequence 'simple-vector))))
+             (,process input-sequence start-index)))))))
