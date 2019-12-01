@@ -29,7 +29,7 @@ A following example shows an implementation of the grammer of Niklaus Wirth's PL
   (<ident>      '(symbolp))
   (<num>        '(numberp)))
 ```
-Then, the macro `defparser` defines a function `program` that can understand above grammer.
+Then, the macro `defparser` defines a function `program` that can understand above grammer,
 ```common-lisp
 CL-USER> (program '("const" x "=" 12 ";" "begin" x ":=" 2 "end"))
 T     ;; result
@@ -37,6 +37,7 @@ T     ;; result
 T     ;; (partially) match-p
 T     ;; input-exhausted-p
 ```
+(note that the code seems to be okay syntactically, but it is definitely wrong semantically).
 By default, a defuned parser returns T or an unmatch descriptor (it may depend on my preference in future).
 This behavior can be changed by giving a result-interpretor function as a third element of a rule as follows.
 ```common-lisp
