@@ -39,7 +39,8 @@
     '(predicate)  : => (predicate x)
     'symbol       : => (eq 'symbol x)
     literal       : => (eql literal x)
-    #(a b c)      : current input sequence starts with this vector
+    #(a b c)      : sequentially match to vector elements (aka. start with)
+    '#(a b c)     : match to the vector itself (by equal)
     any           : any kinds of an input element
     nil           : empty input (does not consume the input sequence)
     $             : the end of the input
