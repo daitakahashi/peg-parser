@@ -50,7 +50,7 @@ In this case, the lambda function will be invoked by one of the matched result (
 or (3) a list `("(" <expression> ")")`, and expected to return the results' interpreted value.
 
 ## Let operator (experimental)
-The parser can bind a matched result by `let` operator. 
+The parser can bind a matched result to a symbol (in other words, a local non-terminal symbol) by a `let` operator. 
 The below parser `tagged-tree` matches to an xml-like tagged tree with any tag-names.
 ```common-lisp
 (peg:defparser tagged-tree (<root>)
