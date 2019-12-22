@@ -151,6 +151,38 @@
                                                     ,success)))))))
 
 
+;; Let: bind the first match to a symbol, and use it in successive sequential matches
+;; (let (x <alpabet>) ", " x) -> "a, a", "b, b", ...
+(defun let-expression (seq seq-length current-result current-index exprs)
+  (Let ((next-index     (gensym))
+        (updated-result (gensym))
+        (success        (gensym))
+        (matched-seq    (gensym))
+        (matched-result (gensym))
+        (bound-seq      (gensym))
+        (bound-seq-len  (gensym))
+        (bound-index    (gensym)))
+    (destructuring-bind ((bind-sym bound-expr) &rest exprs)
+        exprs
+      `(multiple-value-bind (,matched-result ,next-index ,success)
+           ,(translate-expression seq seq-length nil current-index
+                                  bound-expr)
+         (if ,success
+             (let ((,matched-seq (subseq ,seq ,current-index ,next-index))
+                   (,updated-result (cons ,matched-result ,current-result)))
+               (flet ((,bind-sym (,bound-seq ,bound-seq-len ,bound-index)
+                        (multiple-value-bind (,updated-result ,next-index ,success)
+                            ,(match-sub-vector bound-seq bound-seq-len
+                                               nil bound-index matched-seq)
+                          (if ,success
+                              ;; reuse a previous result
+                              (values ,matched-result ,next-index ,success)
+                              (values ,updated-result ,bound-index ,success)))))
+                 (declare (inline ,bind-sym))
+                 ,(sequence-expressions seq seq-length updated-result
+                                        next-index exprs))))))))
+
+
 ;; Optional:
 ;; PEG: expr? => (? expr)
 (defun optional-expression (seq seq-length current-result current-index
@@ -185,7 +217,7 @@
        (multiple-value-bind (,updated-result ,next-index ,success)
            ,(translate-expression seq seq-length result index exprs)
          (declare (type fixnum ,next-index))
-         (if (and ,success (< ,next-index ,seq-length))
+         (if (and ,success (<= ,next-index ,seq-length))
              (progn
                (setf ,result ,updated-result)
                (setf ,index ,next-index))
@@ -248,13 +280,32 @@
 				current-result
 				current-index
 				expr)
-       (declare (ignore ,updated-result ,next-index))
+       (declare (ignore ,next-index))
        (values (if ,success
                    ,current-result
                    ,updated-result)
                ,current-index
                (not ,success)))))
 
+
+;; Just skip matched sequence
+(defun skip-if-match (seq seq-length current-result current-index exprs)
+  (let ((updated-result (gensym))
+	(next-index     (gensym))
+	(success        (gensym)))
+    `(multiple-value-bind (,updated-result ,next-index ,success)
+         ,(sequence-expressions seq
+                                seq-length
+				current-result
+				current-index
+				exprs)
+      (if ,success
+          (values ,current-result
+                  ,next-index
+                  ,success)
+          (values ,updated-result
+                  ,current-index
+                  ,success)))))
 
 ;; Three predicate forms for terminal symbols
 ;; 1: '(predicate-call) -> (predicate-call x)
@@ -394,27 +445,28 @@
   (let ((i             (gensym))
         (j             (gensym))
         (target        (gensym))
-        (vector-length (length sub-vector)))
-    `(let ((,target ,sub-vector))
+        (vector-length (gensym)))
+    `(let ((,target ,sub-vector)
+           (,vector-length ,(if (subtypep (type-of sub-vector) 'sequence)
+                                (length sub-vector)
+                                `(length ,sub-vector))))
        (if (>= (- ,seq-length ,current-index) ,vector-length)
            (do ((,i ,current-index (1+ ,i))
                 (,j 0              (1+ ,j)))
                ((= ,j ,vector-length)
-                (values (cons (coerce (subseq ,seq ,current-index ,i)
-                                      (quote ,(vector-sig-generalize-length
-                                               (type-of sub-vector))))
+                (values (cons (subseq ,seq ,current-index ,i)
                               ,current-result)
                         ,i
                         t))
              (if (not (eql (elt ,seq ,i) (elt ,target ,j)))
                  (return (values (peg::make-peg-failure-descriptor
                                   :pos    ,current-index
-                                  :fail '(start-with ,sub-vector))
+                                  :fail (list 'start-with ,sub-vector))
                                  ,current-index
                                  nil))))
            (values (peg::make-peg-failure-descriptor
                     :pos    ,current-index
-                    :fail '(start-with ,sub-vector))
+                    :fail (list 'start-with ,sub-vector))
                    ,current-index ,nil)))))
 
 
@@ -444,7 +496,7 @@
 	      (next-index   (gensym))
 	      (success      (gensym)))
           `(multiple-value-bind (,match-result ,next-index ,success)
-               (,expr ,seq ,seq-length nil ,current-index)
+               (,expr ,seq ,seq-length ,current-index)
              (declare (type fixnum ,next-index))
              (values (if ,success
                          (cons ,match-result ,current-result)
@@ -471,10 +523,6 @@
                 (optional-expression        seq seq-length current-result current-index
                                             (cadr expr)))
                
-               ((equal head-name "REPEAT") ;; Note: implicit sequence
-                (repeat-of-an-expression    seq seq-length current-result current-index
-                                            (cdr expr)))
-               
                ((equal head-name "&")
                 (and-predicate              seq seq-length current-result current-index
                                             (cadr expr)))
@@ -483,7 +531,15 @@
                 (not-predicate              seq seq-length current-result current-index
                                             (cadr expr)))
                
-               ;; Expressions that may take n sub-expressions
+               ;; Expressions that take multiple sub-expressions
+               ((equal head-name "REPEAT")
+                (repeat-of-an-expression    seq seq-length current-result current-index
+                                            (cdr expr)))
+               
+               ((equal head-name "_")
+                (skip-if-match              seq seq-length current-result current-index
+                                            (cdr expr)))
+               
                ((equal head-name "/")
                 (ordered-choice-expressions seq seq-length current-result current-index
                                             (cdr expr)))
@@ -492,6 +548,11 @@
                 (group-expressions          seq seq-length current-result current-index
                                             (cdr expr)))
                
+               ((equal head-name "LET")
+                (let-expression             seq seq-length current-result current-index
+                                            (cdr expr)))
+               
+               ;; Sequence expression is a default option
                (t
                 (sequence-expressions       seq seq-length current-result current-index
                                             expr))))
@@ -500,12 +561,12 @@
            (sequence-expressions      seq seq-length current-result current-index
                                       expr))))
 
-    ;; A starts-with-a-vector expression
+    ;; A sub-vector expression
     ((vectorp expr)
      (match-sub-vector     seq seq-length current-result current-index
                            expr))
     
-    ;; Otherwise, assume this is a scalar literal and apply an eql comparison
+    ;; Otherwise, assume this is a scalar literal
     (t
      (predicate-eql       seq seq-length current-result current-index
                           expr))))
@@ -518,16 +579,15 @@
 (defun translate-single-rule (nt-symbol rule-body memo result-interpretor)
   (let ((seq            (gensym))
         (seq-length     (gensym))
-        (current-result (gensym))
         (updated-result (gensym))
         (current-index  (gensym))
         (next-index     (gensym))
 	(success        (gensym))
         (lookup-result  (gensym))
         (lookup-success (gensym)))
-    `(,nt-symbol (,seq ,seq-length ,current-result ,current-index)
+    `(,nt-symbol (,seq ,seq-length ,current-index)
                  (declare (ignorable ,seq-length)
-                          (type simple-vector ,seq)
+                          (type (or simple-vector simple-string) ,seq)
                           (type fixnum ,current-index ,seq-length))
                  (multiple-value-bind (,lookup-result ,lookup-success)
                      (gethash ,current-index ,memo)
@@ -549,7 +609,7 @@
                          (multiple-value-bind (,updated-result ,next-index ,success)
                              ,(translate-expression seq
                                                     seq-length
-                                                    current-result
+                                                    nil
                                                     current-index
                                                     rule-body)
                            (declare (type fixnum ,next-index) (type boolean ,success))
@@ -639,9 +699,11 @@
                     (gensym)))
             non-terminal-symbols)
       `(labels ((,process (,input-sequence ,start-index)
-                  (declare (type simple-vector ,input-sequence)
+                  (declare (type (or simple-vector simple-string) ,input-sequence)
                            (type fixnum ,start-index)
-                           (optimize ,@dtakahashi.peg:*optimization-flag*))
+                           (optimize ,@dtakahashi.peg:*optimization-flag*)
+                           #+sbcl(sb-ext:muffle-conditions
+                                  sb-ext:compiler-note))
                   ;; generate memoise tables for each non-terminal symbol
                   (let ,(mapcar (lambda (memo-var)
                                   `(,memo-var (make-hash-table)))
@@ -663,7 +725,7 @@
                         (or
                          ,@(mapcar (lambda (start-symbol)
                                      `(multiple-value-bind (,result ,index-next ,success)
-                                          (,start-symbol ,input-sequence ,input-length nil ,start-index)
+                                          (,start-symbol ,input-sequence ,input-length ,start-index)
                                         (declare (type fixnum ,index-next))
                                         (if ,success
                                             (values ,result     ;; parse result
@@ -686,5 +748,8 @@
                                      ;; same as above
                                      (declare #+sbcl(sb-ext:muffle-conditions
                                                      sb-ext:compiler-note))
-                                   (coerce input-sequence 'simple-vector))))
+                                   (if (or (typep input-sequence 'simple-vector)
+                                           (typep input-sequence 'simple-string))
+                                       input-sequence
+                                       (coerce input-sequence 'simple-vector)))))
              (,process input-sequence start-index)))))))
