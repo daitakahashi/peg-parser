@@ -43,8 +43,37 @@ This behavior can be changed by giving a result-interpretor function as a third 
 ```common-lisp
   ...
   (<factor>     (/ <ident> <num> (group '"(" <expression> '")")) ;; "group" combines results into a list
-                (lambda (x) (if (consp x) (cadr x) x)))          ;; <- this!
+                (lambda (x) (if (consp x) (cadr x) x)))
   ...
 ```
 In this case, the lambda function will be invoked by one of the matched result (1) `<ident>`, (2) `<num>`,
 or (3) a list `("(" <expression> ")")`, and expected to return the results' interpreted value.
+
+## Let operator (experimental)
+The parser can bind a matched result by `let` operator. 
+The below parser `tagged-tree` matches to an xml-like tagged tree with any tag-names.
+```common-lisp
+(peg:defparser tagged-tree (<root>)
+    (<root>   (repeat <tagged-branch>)
+              #'list)
+    (<tagged-branch> ((_ "<")
+                      (let (x <tag>)
+                        (_ ">")
+                        <root>
+                        (_ "</") x (_ ">")))
+                     (lambda (x1 r x2) `(,@x1 ,@r ,@x2)))
+    (<tag> (group '(alpha-char-p) (repeat '(alpha-char-p)))
+           (lambda (x) (concatenate 'string x))))
+```
+```common-lisp
+CL-USER> (tagged-tree "<a><b></b></a>")
+(("a" ("b" "b") "a"))
+14
+T
+T
+CL-USER> (tagged-tree "<a><b></c></a>")
+NIL
+0
+T
+NIL
+```
