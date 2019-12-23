@@ -36,7 +36,7 @@ T     ;; input-exhausted-p
 ```
 (note that the code is syntactically okay, but it is semantically nonsense).
 
-See also [a more complecated version](PL-0.lisp) that translates this PL/0 to a lisp-like pseudocode.
+See also [a more complecated version](PL-0.lisp) that compiles this PL/0 to common lisp.
 
 ## Let operator (experimental)
 The parser can bind a matched result to a symbol (in other words, a local non-terminal symbol) by a `let` operator. 
