@@ -589,6 +589,9 @@
                  (declare (ignorable ,seq-length)
                           (type (or simple-vector simple-string) ,seq)
                           (type fixnum ,current-index ,seq-length))
+		 ;; (format t "~A: ~A...~&" (symbol-name ',nt-symbol)
+		 ;; 	 (subseq ,seq ,current-index
+		 ;; 		 (min (+ ,current-index 20) ,seq-length)))
                  (multiple-value-bind (,lookup-result ,lookup-success)
                      (gethash ,current-index ,memo)
                    (if ,lookup-success
@@ -622,6 +625,8 @@
                                (setf (memoise-value-result ,lookup-result) ,updated-result
                                      (memoise-value-index ,lookup-result) ,next-index
                                      (memoise-value-state ,lookup-result) ,success)
+			       ;; (format t "~A: -> ~A (~A)~&" (symbol-name ',nt-symbol)
+			       ;; 	       ,updated-result ,success)
                                (values ,updated-result ,next-index ,success))))))))))
 
 (defun set-find (key s)
